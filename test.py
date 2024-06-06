@@ -40,7 +40,7 @@ else:
     raise ValueError('Source file not found!')
 
 
-x = np.linspace(-25, 25, 50)
+x = np.linspace(-25, 25, 100)
 X = np.zeros((len(x), len(x), 3))
 X[..., 2] = x.reshape(-1, 1)
 X[..., 1] = x.reshape(1, -1)

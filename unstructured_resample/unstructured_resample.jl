@@ -15,11 +15,139 @@
 # using StaticArrays
 # imports already done on the Python end of things
 
+struct CellListGeometry{T, N}
+    origin::SVector{N, T}
+    h::SVector{N, T}
+    N::SVector{N, Int64}
+end
+
+struct CellList{T, N}
+    geometry::CellListGeometry{T, N}
+    index_start::Array{Int64, N}
+    index_end::Array{Int64, N}
+    cell_start::Matrix{T}
+    cell_end::Matrix{T}
+    contents::Vector{Int64}
+
+    function CellList(clg::CellListGeometry{T, 3}, cell_start_a::AbstractMatrix{T}, cell_end_a::AbstractMatrix{T}) where {T <: AbstractFloat}
+        ndim, NC = size(cell_start_a)
+        Vec = SVector{3, T}
+
+        cell_start = reinterpret(Vec, cell_start_a)
+        cell_end = reinterpret(Vec, cell_end_a)
+
+        shape = (clg.N[1], clg.N[2], clg.N[3])
+
+        # First figure out how many input grid cells span each cell
+        counts = fill(Int64(0), shape)
+        for ic in 1:NC
+            # Input grid cells may span more than one cell list cell.
+            i0, j0, k0 = cl_index(cell_start[ic], clg)
+            i1, j1, k1 = cl_index(cell_end[ic], clg)
+            for i in i0:i1
+                for j in j0:j1
+                    for k in k0:k1
+                        counts[i, j, k] += 1
+                    end
+                end
+            end
+        end
+
+        # Now build the starts array, which tells us the first index in
+        # contents that corresponds to each cell
+        starts = Array{Int64}(undef, shape)
+        accum = 1
+        for ic in 1:length(counts)
+            starts[ic] = accum
+            accum += counts[ic]
+        end
+
+        # Nominamlly the ends is starts[i+1]-1, but we can also use it as a 
+        # counter to fill in each cell
+        ends = copy(starts)
+
+        # The list of input grid cells corresponding to each cell
+        contents = Vector{Int64}(undef, accum)
+        for ic in 1:NC
+            i0, j0, k0 = cl_index(cell_start[ic], clg)
+            i1, j1, k1 = cl_index(cell_end[ic], clg)
+            for i in i0:i1
+                for j in j0:j1
+                    for k in k0:k1
+                        contents[ends[i, j, k]] = ic
+                        ends[i, j, k] += 1
+                    end
+                end
+            end
+        end
+
+        new{T, 3}(clg, starts, ends, cell_start_a, cell_end_a, contents)
+    end
+end
+
+function cl_index(X::AbstractVector{T}, clg::CellListGeometry{T, 3})::SVector{3, Int64} where {T <: AbstractFloat}
+    return SVector{3, Int64}(
+        clamp((X[1] - clg.origin[1]) ÷ clg.h[1] + 1, 1, clg.N[1]),
+        clamp((X[2] - clg.origin[2]) ÷ clg.h[2] + 1, 1, clg.N[2]),
+        clamp((X[3] - clg.origin[3]) ÷ clg.h[3] + 1, 1, clg.N[3]),
+    )
+end
+
+function cl_index(X::AbstractVector{T}, cl::CellList{T, 3})::SVector{3, Int64} where {T <: AbstractFloat}
+    return cl_index(X, cl.geometry)
+end
+
+function find_cell(X::SVector{3, T}, cl::CellList{T, 3})::Int64 where {T <: AbstractFloat}
+    i, j, k = cl_index(X, cl)
+
+    for n in cl.index_start[i, j, k]:cl.index_end[i, j, k]
+        ic = cl.contents[n]
+        if (
+            (X[1] >= cl.cell_start[1, ic]) && 
+            (X[2] >= cl.cell_start[2, ic]) && 
+            (X[3] >= cl.cell_start[3, ic]) && 
+            (X[1] <= cl.cell_end[1, ic]) &&
+            (X[2] <= cl.cell_end[2, ic]) &&
+            (X[3] <= cl.cell_end[3, ic])
+        )
+
+            return ic - 1 # Outputs are zero indexed, even though cell list itself is 1-indexed.
+        end
+    end
+
+    return Int64(-1)
+end
+
+function build_cell_list(points_a::AbstractMatrix{T}, cell_start_index::AbstractVector{IT}, cell_point_index::AbstractVector{IT}, cell_type::AbstractVector{IT2}, sx::Real, sy::Real=-1.0, sz::Real=-1.0)::Tuple{CellList{T, 3}, Matrix{Int64}} where {T <: AbstractFloat, IT <: Integer, IT2 <: Integer}
+    Vec = SVector{3, T}
+    sx = T(sx)
+    sy = sy > 0 ? T(sy) : sx
+    sz = sz > 0 ? T(sz) : sy 
+    # Nominal size of a grid cell
+    s = Vec(sx, sy, sz)
+
+    cell_start, cell_end, cell_corners = analyze_cells(points_a, cell_start_index, cell_point_index, cell_type)
+
+    X0 = Vec(minimum(cell_start, dims=2))
+    L = Vec(maximum(cell_end, dims=2)) - X0
+    
+    # Number of grid cells is rounded up
+    N = SVector{3, Int64}(ceil.(L ./ s))
+
+    # Actual cell size is slightly smaller due to rounding up of number along
+    # each axis.  THis way it exactly fits the required size
+    geometry = CellListGeometry(X0, L ./ N, N)
+
+    return (CellList(geometry, cell_start, cell_end), cell_corners)
+end
+
+
 function analyze_cells(points_a::AbstractArray{T, 2}, cell_start_index::AbstractVector{IT}, cell_point_index::AbstractVector{IT}, cell_type::AbstractVector{IT2})::Tuple{Array{T, 2}, Array{T, 2}, Array{Int64, 2}} where {T <: AbstractFloat, IT <: Integer, IT2 <: Integer}
     # Returns: (
     #    cell_start: (x0, y0, z0),
     #    cell_end: (x1, y1, z1)
     #    cell_corners: (eight components, ordered)
+    #    cell_list: CellList type
     # )
     ndim, NP = size(points_a)
     if ndim != 3
@@ -95,7 +223,8 @@ function analyze_cells(points_a::AbstractArray{T, 2}, cell_start_index::Abstract
     return (cell_start_a, cell_end_a, cell_corners)
 end
 
-function find_cell_index(X_a::AbstractArray{T, 2}, cell_data::Tuple{AbstractArray{T, 2}, AbstractArray{T, 2}, Array{Int64, 2}})::Vector{Int64} where {T <: Number}
+# Brute force cell finding, now depreciated in favor of the cell list version
+function find_cell_index(X_a::AbstractArray{T, 2}, cell_data::Tuple{AbstractArray{T, 2}, AbstractArray{T, 2}, Array{Int64, 2}})::Vector{Int64} where {T <: AbstractFloat}
     ndim, NX = size(X_a)
     if ndim != 3
         error("Points should be an array whose first dimension is 3 (found $ndim)")
@@ -105,6 +234,7 @@ function find_cell_index(X_a::AbstractArray{T, 2}, cell_data::Tuple{AbstractArra
     X = reinterpret(Vec, X_a)
     cell_start = reinterpret(Vec, cell_data[1])
     cell_end = reinterpret(Vec, cell_data[2])
+
     cell_index = fill(Int64(-1), NX)
 
     # Brute force check if each point is in each cell.
@@ -121,14 +251,41 @@ function find_cell_index(X_a::AbstractArray{T, 2}, cell_data::Tuple{AbstractArra
     return cell_index
 end
 
-function trilinear_resample(X::AbstractArray{T, 2}, V::AbstractArray{T, 2}, cell_index::Vector{Int64}, cell_data::Tuple{AbstractArray{T, 2}, AbstractArray{T, 2}, Array{Int64, 2}})::Array{T, 2} where {T <: Number}
+# Version using cell lists: much faster!
+function find_cell_index(X_a::AbstractArray{T, 2}, cell_data::Tuple{CellList{T, 3}, Array{Int64, 2}})::Vector{Int64} where {T <: AbstractFloat}
+    cell_list, corners = cell_data
+
+    ndim, NX = size(X_a)
+    if ndim != 3
+        error("Points should be an array whose first dimension is 3 (found $ndim)")
+    end
+
+    Vec = SVector{3, T}
+    X = reinterpret(Vec, X_a)
+    
+    cell_index = fill(Int64(-1), NX)
+
+    @Threads.threads for i in 1:NX
+        cell_index[i] = find_cell(X[i], cell_list)
+    end
+
+    return cell_index
+end
+
+
+function trilinear_resample(X::AbstractArray{T, 2}, V::AbstractArray{T, 2}, cell_index::Vector{Int64}, cell_data::Tuple{CellList{T, 3}, Array{Int64, 2}})::Array{T, 2} where {T <: AbstractFloat}
+    cl, cell_corners = cell_data
+    return trilinear_resample(X, V, cell_index, (cl.cell_start, cl.cell_end, cell_corners))
+end
+
+
+function trilinear_resample(X::AbstractArray{T, 2}, V::AbstractArray{T, 2}, cell_index::Vector{Int64}, cell_data::Tuple{AbstractArray{T, 2}, AbstractArray{T, 2}, Array{Int64, 2}})::Array{T, 2} where {T <: AbstractFloat}
     cell_start, cell_end, cell_corners = cell_data
 
     ndim, NX = size(X)
     if ndim != 3
         error("X should be an array whose first dimension is 3 (found $ndim)")
     end
-
 
     Vec = SVector{3, T}
 

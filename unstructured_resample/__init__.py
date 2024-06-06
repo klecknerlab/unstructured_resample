@@ -284,7 +284,7 @@ class LegacyVTKReader:
 
         np.savez(fn, **data)
 
-    def resample(self, X, *fields):
+    def resample(self, X, *fields, cell_size=None):
         output_shape = X.shape[:-1]
         for field in fields:
             if field not in self.point_data:
@@ -292,8 +292,12 @@ class LegacyVTKReader:
             
         Xj = X.reshape(-1, X.shape[-1]).T
         if not hasattr(self, 'jl_cell_data'):
-            self.jl_cell_data = jl.analyze_cells(self.points.T, self.cell_start_index, self.cell_point_index, self.cell_types)
-    
+            # New version uses cell lists, slower init but much faster resampling!
+            # self.jl_cell_data = jl.analyze_cells(self.points.T, self.cell_start_index, self.cell_point_index, self.cell_types)
+            if cell_size is None:
+                cell_size = max(self.points.max(0) - self.points.min(0)) / 100
+            self.jl_cell_data = jl.build_cell_list(self.points.T, self.cell_start_index, self.cell_point_index, self.cell_types, cell_size)
+
         cell_index = jl.find_cell_index(Xj, self.jl_cell_data)
 
         output = tuple(
