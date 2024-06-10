@@ -22,15 +22,6 @@ os.environ['PYTHON_JULIACALL_HANDLE_SIGNALS'] = "yes"
 import juliacall
 jl = juliacall.Main
 
-
-for pkg in ["StaticArrays"]:
-    try: 
-        jl.seval(f"using {pkg}")
-    except:
-        print(f'Installing Julia Package "{pkg}"; this make take a minute or more...')
-        sys.stdout.flush()
-        jl.seval(f'import Pkg; Pkg.add("{pkg}")')
-
 SRC_DIR = os.path.split(__file__)[0]
 jl.include(os.path.join(SRC_DIR, 'unstructured_resample.jl'))
 

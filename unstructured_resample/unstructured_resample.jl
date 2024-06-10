@@ -12,8 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# using StaticArrays
-# imports already done on the Python end of things
+using StaticArrays
 
 struct CellListGeometry{T, N}
     origin::SVector{N, T}
