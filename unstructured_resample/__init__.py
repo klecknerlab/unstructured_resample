@@ -56,18 +56,18 @@ class LegacyVTKReader:
             dat = np.load(fn)
             if str(dat["__ID__"]) != 'VTKResaved':
                 raise ValueError('This file does not appear to be a resaved VTK file.')
-            
+
             for k in self._SAVED_STR:
                 if k in dat:
                     setattr(self, k, str(dat[k]))
-                
+
             for k in self._SAVED_INT:
                 if k in dat:
                     setattr(self, k, int(dat[k]))
 
             for k in self._SAVED_ARRAYS:
                 if k in dat:
-                    setattr(self, k, dat[k])   
+                    setattr(self, k, dat[k])
 
             for cat in self._SAVED_CATEGORIES:
                 prefix = f'__{cat.upper()}__'
@@ -87,20 +87,20 @@ class LegacyVTKReader:
             first_line = self.f.readline()
             if first_line.strip() != '# vtk DataFile Version 2.0':
                 raise ValueError('The first line of this file should be "# vtk DataFile Version 2.0"')
-            
+
             self.title = self.f.readline()
 
             self._tokens = []
 
             self._line = 2
             self.data_type = self.get_token()
-            if self.data_type != "ASCII": 
+            if self.data_type != "ASCII":
                 raise ValueError(f'This reader only supports ASCII data types, found "{self.data_type}"')
-            
+
             token = self.get_token()
             if token != 'DATASET':
                 raise ValueError(f'Expected "DATASET" after "ASCII" signifier in line {self._line}, found "{token}"')
-            
+
             self.dataset = self.get_token()
             if self.dataset not in self._SUPPORTED_TYPES:
                 raise ValueError(f'Unsupported dataset type "{self.dataset}" in line {self._line}')
@@ -170,7 +170,7 @@ class LegacyVTKReader:
 
                 else:
                     raise ValueError(f'Expected data type indictor in line {self._line} of "{self.fn}", found "{token}" instead.')
-                
+
                 token = self.get_token()
 
             self.close
@@ -195,7 +195,7 @@ class LegacyVTKReader:
                 name = self.get_token()
                 dt = self.get_type()
                 components = 3
-            
+
             arr = np.empty(num_points * components, dtype=dt)
             target[name] = arr.reshape(num_points, components)
             for i in range(num_points * components):
@@ -211,19 +211,19 @@ class LegacyVTKReader:
                 continue
             if not line: #EOF
                 return None
-            
+
             self._tokens = [g[0] for g in self._TOKEN_MATCH.findall(line)]
         if self._tokens:
             if consume:
                 return self._tokens.pop(0)
-            else: 
+            else:
                 return self._tokens[0]
         else:
             return None
-        
+
     def peek_token(self):
         return self.get_token(consume=False)
-    
+
     def close(self):
         self.f.close()
         delattr(self, 'f')
@@ -238,14 +238,14 @@ class LegacyVTKReader:
             return int(token)
         except:
             raise ValueError(f'Expected integer token in line {self._line} of VTK file "{self.fn}"\nFound {token} instead {"(" + err_msg + ")" if err_msg else ""}')
-        
+
     def get_float(self, err_msg=None):
         token = self.get_token()
         try:
             return float(token)
         except:
             raise ValueError(f'Expected float token in line {self._line} of VTK file "{self.fn}"\nFound "{token}" instead {"(" + err_msg + ")" if err_msg else ""}')
-            
+
     def get_value(self, err_msg=None):
         raise ValueError('get_type must be called before get_value to determine data type')
 
@@ -257,12 +257,12 @@ class LegacyVTKReader:
             dt = self._DATA_TYPES[token]
             self.get_value = self.get_float if dt in ('f', 'd') else self.get_int
             return dt
-        
+
     def save(self, fn):
         ext = os.path.splitext(fn)[1]
         if ext.lower() != '.npz':
             raise ValueError('Saving is only supported to .npz files')
-        
+
         data = {'__ID__':'VTKResaved'}
 
         for k in self._SAVED_STR + self._SAVED_INT + self._SAVED_ARRAYS:
@@ -275,19 +275,21 @@ class LegacyVTKReader:
 
         np.savez(fn, **data)
 
+    def _check_grid(self, cell_size=None):
+        if not hasattr(self, 'jl_cell_data'):
+            if cell_size is None:
+                cell_size = max(self.points.max(0) - self.points.min(0)) / 100
+            self.jl_cell_data = jl.build_cell_list(self.points.T, self.cell_start_index, self.cell_point_index, self.cell_types, cell_size)
+
+
     def resample(self, X, *fields, cell_size=None):
         output_shape = X.shape[:-1]
         for field in fields:
             if field not in self.point_data:
                 raise ValueError(f'"{field}" not in point_data\nAvailable options: {", ".join(k for k in self.point_data.keys() if self.point_data[k].dtype in ("f", "d"))}')
-            
+
         Xj = X.reshape(-1, X.shape[-1]).T
-        if not hasattr(self, 'jl_cell_data'):
-            # New version uses cell lists, slower init but much faster resampling!
-            # self.jl_cell_data = jl.analyze_cells(self.points.T, self.cell_start_index, self.cell_point_index, self.cell_types)
-            if cell_size is None:
-                cell_size = max(self.points.max(0) - self.points.min(0)) / 100
-            self.jl_cell_data = jl.build_cell_list(self.points.T, self.cell_start_index, self.cell_point_index, self.cell_types, cell_size)
+        self._check_grid(cell_size)
 
         cell_index = jl.find_cell_index(Xj, self.jl_cell_data)
 
@@ -296,7 +298,14 @@ class LegacyVTKReader:
             for field in fields
         )
 
-        if len(output) == 1: 
+        if len(output) == 1:
             return output[0]
         else:
             return output
+
+ 
+    def find_grid_size(self, X, cell_size=None):
+        Xj = X.reshape(-1, X.shape[-1]).T
+        self._check_grid(cell_size)
+        cell_index = jl.find_cell_index(Xj, self.jl_cell_data)
+        return jl.find_grid_size(Xj, cell_index, self.jl_cell_data).to_numpy().T.reshape(X.shape)

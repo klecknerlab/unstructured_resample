@@ -61,7 +61,7 @@ struct CellList{T, N}
             accum += counts[ic]
         end
 
-        # Nominamlly the ends is starts[i+1]-1, but we can also use it as a 
+        # Nominamlly the ends is starts[i+1]-1, but we can also use it as a
         # counter to fill in each cell
         ends = copy(starts)
 
@@ -102,9 +102,9 @@ function find_cell(X::SVector{3, T}, cl::CellList{T, 3})::Int64 where {T <: Abst
     for n in cl.index_start[i, j, k]:cl.index_end[i, j, k]
         ic = cl.contents[n]
         if (
-            (X[1] >= cl.cell_start[1, ic]) && 
-            (X[2] >= cl.cell_start[2, ic]) && 
-            (X[3] >= cl.cell_start[3, ic]) && 
+            (X[1] >= cl.cell_start[1, ic]) &&
+            (X[2] >= cl.cell_start[2, ic]) &&
+            (X[3] >= cl.cell_start[3, ic]) &&
             (X[1] <= cl.cell_end[1, ic]) &&
             (X[2] <= cl.cell_end[2, ic]) &&
             (X[3] <= cl.cell_end[3, ic])
@@ -121,7 +121,7 @@ function build_cell_list(points_a::AbstractMatrix{T}, cell_start_index::Abstract
     Vec = SVector{3, T}
     sx = T(sx)
     sy = sy > 0 ? T(sy) : sx
-    sz = sz > 0 ? T(sz) : sy 
+    sz = sz > 0 ? T(sz) : sy
     # Nominal size of a grid cell
     s = Vec(sx, sy, sz)
 
@@ -129,7 +129,7 @@ function build_cell_list(points_a::AbstractMatrix{T}, cell_start_index::Abstract
 
     X0 = Vec(minimum(cell_start, dims=2))
     L = Vec(maximum(cell_end, dims=2)) - X0
-    
+
     # Number of grid cells is rounded up
     N = SVector{3, Int64}(ceil.(L ./ s))
 
@@ -169,7 +169,7 @@ function analyze_cells(points_a::AbstractArray{T, 2}, cell_start_index::Abstract
         ct = cell_type[i]
         if (ct < 11) || (ct > 12)
             error("Cell type for tri-linear resample must be 11 or 12 (voxel or hexahedron)")
-        end 
+        end
 
         # Start and end indices of cell_index, which gives the indices of the
         # points corresponding to the edges of the cell
@@ -179,7 +179,7 @@ function analyze_cells(points_a::AbstractArray{T, 2}, cell_start_index::Abstract
         # Find the min/max values of each cell
         # Note that the index arrays are zero indexed!
         cs = points[cell_point_index[ics] + 1]
-        ce = cs 
+        ce = cs
 
         for ic in (ics+1):ice
             p = points[cell_point_index[ic] + 1]
@@ -206,7 +206,7 @@ function analyze_cells(points_a::AbstractArray{T, 2}, cell_start_index::Abstract
                 if p[d] == ce[d]
                     id += 1 << (d-1)
                 elseif p[d] != cs[d]
-                    error("point $ip does not correspond to an edge of cell $(ic-1); is this unstructured grid rectilinear?")            
+                    error("point $ip does not correspond to an edge of cell $(ic-1); is this unstructured grid rectilinear?")
                 end
             end
             found_ids += 1 << id
@@ -261,7 +261,7 @@ function find_cell_index(X_a::AbstractArray{T, 2}, cell_data::Tuple{CellList{T, 
 
     Vec = SVector{3, T}
     X = reinterpret(Vec, X_a)
-    
+
     cell_index = fill(Int64(-1), NX)
 
     @Threads.threads for i in 1:NX
@@ -321,4 +321,37 @@ function trilinear_resample(X::AbstractArray{T, 2}, V::AbstractArray{T, 2}, cell
     end
 
     return V_out
+end
+
+function find_grid_size(X::AbstractArray{T, 2}, cell_index::Vector{Int64}, cell_data::Tuple{AbstractArray{T, 2}, AbstractArray{T, 2}, Array{Int64, 2}})::Array{T, 2} where {T <: AbstractFloat}
+    cell_start, cell_end, cell_corners = cell_data
+
+    ndim, NX = size(X)
+    if ndim != 3
+        error("X should be an array whose first dimension is 3 (found $ndim)")
+    end
+
+    Vec = SVector{3, T}
+
+    V_out = fill(T(NaN), (3, NX))
+
+    @Threads.threads for i in 1:NX
+        x, y, z = X[1, i], X[2, i], X[3, i]
+        ic = cell_index[i] + 1
+        if ic != 0 # Make sure it is in a valid cell
+            x0, y0, z0 = cell_start[1, ic], cell_start[2, ic], cell_start[3, ic]
+            x1, y1, z1 =   cell_end[1, ic],   cell_end[2, ic],   cell_end[3, ic]
+
+            V_out[1, i] = x1 - x0
+            V_out[2, i] = y1 - y0
+            V_out[3, i] = z1 - z0
+        end
+    end
+
+    return V_out
+end
+
+function find_grid_size(X::AbstractArray{T, 2}, cell_index::Vector{Int64}, cell_data::Tuple{CellList{T, 3}, Array{Int64, 2}})::Array{T, 2} where {T <: AbstractFloat}
+    cl, cell_corners = cell_data
+    return find_grid_size(X, cell_index, (cl.cell_start, cl.cell_end, cell_corners))
 end
